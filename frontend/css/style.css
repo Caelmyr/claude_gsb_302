@@ -246,6 +246,32 @@ td.mono { font-family: var(--mono); font-size: 12px; }
 }
 .tabs button.active { color: var(--accent); border-bottom-color: var(--accent); }
 
+/* ---- progress bar (live solver jobs) -------------------------------- */
+.progress-wrap { width: 100%; }
+.progress-bar {
+  height: 10px;
+  background: #eef0f3;
+  border-radius: 999px;
+  overflow: hidden;
+}
+.progress-fill {
+  height: 100%;
+  width: 0%;
+  border-radius: 999px;
+  background: linear-gradient(90deg, var(--accent), var(--accent-2));
+  transition: width .35s ease;
+}
+.progress-fill.warn { background: linear-gradient(90deg, #f59e0b, #f97316); }
+.progress-fill.bad { background: var(--bad); }
+.progress-fill.indeterminate {
+  width: 35% !important;
+  animation: progress-slide 1.2s ease-in-out infinite;
+}
+@keyframes progress-slide {
+  0% { margin-left: -35%; }
+  100% { margin-left: 100%; }
+}
+
 .mono { font-family: var(--mono); }
 .muted { color: var(--muted); }
 .small { font-size: 12px; }

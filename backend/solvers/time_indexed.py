@@ -21,13 +21,19 @@ meta-heuristics (GA / SA) are the intended path for those.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from .. import models
 
 # Upper bound on total columns for the time-indexed formulation.  Beyond this
 # the LP/IP route is refused and the caller is pointed at the meta-heuristics.
 MAX_TIME_INDEXED_VARS = 30000
+
+# The bundled solver is a *pure-Python full-tableau* simplex: one pivot is
+# O(rows * columns).  Beyond this tableau-cell budget even a single pivot can
+# take tens of seconds, which would make progress reporting and early stops
+# unresponsive.  Instances past it should use the meta-heuristics.
+MAX_TABLEAU_CELLS = 20_000_000
 
 
 @dataclass
@@ -83,11 +89,18 @@ def _linear_objective(problem: models.Problem) -> Dict[str, Tuple[str, float]]:
     return {o.type: 1.0}
 
 
-def build(problem: models.Problem) -> LPModel:
+def build(problem: models.Problem,
+          progress: Optional[Callable[[str, int, int], None]] = None) -> LPModel:
     """Construct the time-indexed LP/IP for ``problem``.
 
     Raises ``ValueError`` when the instance is too large for exact methods.
+    ``progress(phase, done, total)`` (optional) is called while generating the
+    constraint rows so callers can render build-phase progress.
     """
+    def _emit(phase: str, done: int, total: int) -> None:
+        if progress is not None:
+            progress(phase, done, total)
+
     tasks = problem.tasks
     resources = problem.resources
     horizon = problem.horizon
@@ -161,6 +174,35 @@ def build(problem: models.Problem) -> LPModel:
     b_eq: List[float] = []
     n = len(vars_)
 
+    # Estimate the tableau size *before* materialising the (dense) constraint
+    # rows.  Upper bounds per family:
+    #   one assignment row per task (equality),
+    #   one precedence row per (edge, horizon slot),
+    #   one capacity row per (resource, slot),
+    #   max_concurrent / non_overlap up to one row per slot,
+    #   one makespan row per task, one tardiness row per due-dated task.
+    n_hc_slot_rows = sum(
+        horizon for hc in problem.hard_constraints
+        if hc.type in ("max_concurrent", "non_overlap"))
+    est_rows = (
+        len(tasks)
+        + len(problem.precedence_edges()) * horizon
+        + len(resources) * horizon
+        + n_hc_slot_rows
+        + (len(tasks) if need_makespan else 0)
+        + len(tard_idx)
+    )
+    if n > MAX_TIME_INDEXED_VARS:
+        raise ValueError(
+            f"time-indexed formulation has {n} variables (limit "
+            f"{MAX_TIME_INDEXED_VARS}); use genetic / simulated_annealing")
+    if est_rows * n > MAX_TABLEAU_CELLS:
+        raise ValueError(
+            f"time-indexed LP tableau is too large for the built-in simplex "
+            f"(~{est_rows} rows x {n} columns ≈ {est_rows * n:,} cells, "
+            f"limit {MAX_TABLEAU_CELLS:,}); use genetic / simulated_annealing "
+            f"for an instance of this size")
+
     def row_ub(coeffs: Dict[int, float], rhs: float) -> None:
         r = [0.0] * n
         for idx, val in coeffs.items():
@@ -184,7 +226,10 @@ def build(problem: models.Problem) -> LPModel:
         row_eq(coeffs, 1.0)
 
     # (2) precedence  sum_{t<=s} x_{k,t} <= sum_{t<=s-d_j} x_{j,t}
-    for before, after in problem.precedence_edges():
+    edges = problem.precedence_edges()
+    for ei, (before, after) in enumerate(edges):
+        if progress is not None:
+            _emit("building precedence constraints", ei, max(len(edges), 1))
         if before not in starts or after not in starts:
             continue
         d_before = tmap[before].duration
@@ -207,7 +252,9 @@ def build(problem: models.Problem) -> LPModel:
     cap_override = {c.params.get("resource"): float(c.params.get("capacity", 0))
                     for c in problem.hard_constraints
                     if c.type == "resource_capacity" and c.params.get("resource")}
-    for res in resources:
+    for ri, res in enumerate(resources):
+        if progress is not None:
+            _emit("building resource constraints", ri, max(len(resources), 1))
         cap = cap_override.get(res.id, res.capacity)
         for slot in range(horizon):
             coeffs: Dict[int, float] = {}
@@ -270,11 +317,15 @@ def build(problem: models.Problem) -> LPModel:
                 coeffs[idx] = (t + task.duration)
             row_ub(coeffs, float(task.due_date))
 
-    # size guard
-    if n > MAX_TIME_INDEXED_VARS:
+    # size guard (exact, after materialisation; the early estimate above only
+    # skips the heavy matrix construction when it is clearly hopeless).
+    n_rows = len(A_ub) + len(A_eq)
+    if n_rows * n > MAX_TABLEAU_CELLS:
         raise ValueError(
-            f"time-indexed formulation has {n} variables (limit "
-            f"{MAX_TIME_INDEXED_VARS}); use genetic / simulated_annealing")
+            f"time-indexed LP tableau is too large for the built-in simplex "
+            f"({n_rows} rows x {n} columns = {n_rows * n:,} cells, limit "
+            f"{MAX_TABLEAU_CELLS:,}); use genetic / simulated_annealing for "
+            f"an instance of this size")
 
     note = ""
     if primitives.get("cost"):

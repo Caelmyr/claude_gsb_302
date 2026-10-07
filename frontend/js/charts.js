@@ -93,7 +93,74 @@ function hBarChart(container, { labels, values, height = 260, valueFmt = v => fm
   return svg;
 }
 
-/* Simple line chart with dots. */
+/* Best-objective convergence chart for live solver jobs.
+   Draws the incumbent (solid, with step improvements) and, when present, the
+   lower bound (dashed).  X axis is elapsed seconds. */
+function convergenceChart(container, { history, height = 240 }) {
+  const W = 640, H = height, padL = 52, padR = 16, padB = 38, padT = 16;
+  const bestPts = (history || []).filter(p => p.best !== null && p.best !== undefined);
+  const lbPts = (history || []).filter(p => p.lb !== null && p.lb !== undefined && isFinite(p.lb));
+  if (!bestPts.length && !lbPts.length) {
+    container.innerHTML = '<div class="empty">等待第一批进度…</div>';
+    return;
+  }
+  const tMax = Math.max(0.1, ...(history || []).map(p => p.t));
+  const vals = [...bestPts.map(p => p.best), ...lbPts.map(p => p.lb)].filter(isFinite);
+  let vMin = Math.min(...vals), vMax = Math.max(...vals);
+  if (vMax - vMin < 1e-9) { vMin -= 1; vMax += 1; }
+  const pad = (vMax - vMin) * 0.08;
+  vMin -= pad; vMax += pad;
+  const innerW = W - padL - padR, innerH = H - padT - padB;
+  const svg = _svg(container, W, H);
+  const x = t => padL + innerW * Math.min(1, t / tMax);
+  const y = v => padT + innerH - innerH * (v - vMin) / (vMax - vMin);
+
+  for (let i = 0; i <= 4; i++) {
+    const val = vMin + (vMax - vMin) * i / 4;
+    const yy = y(val);
+    const line = document.createElementNS('http://www.w3.org/2000/svg', 'line');
+    line.setAttribute('x1', padL); line.setAttribute('y1', yy);
+    line.setAttribute('x2', W - padR); line.setAttribute('y2', yy);
+    line.setAttribute('stroke', '#eef0f3');
+    svg.appendChild(line);
+    _axis(svg, padL - 6, yy + 3, fmt(val), { anchor: 'end' });
+  }
+  for (let i = 0; i <= 4; i++) {
+    _axis(svg, padL + innerW * i / 4, padT + innerH + 18, (tMax * i / 4).toFixed(1) + 's', { size: 10 });
+  }
+
+  function pathFor(pts, key, step) {
+    let d = '';
+    let prevT = 0, prevV = null;
+    pts.forEach(p => {
+      if (prevV !== null && step) d += `L${x(p.t)} ${y(prevV)} `;
+      d += `${d ? 'L' : 'M'}${x(p.t)} ${y(p[key])} `;
+      prevT = p.t; prevV = p[key];
+    });
+    return d;
+  }
+
+  if (lbPts.length) {
+    const lp = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+    lp.setAttribute('d', pathFor(lbPts, 'lb', false));
+    lp.setAttribute('fill', 'none'); lp.setAttribute('stroke', '#9ca3af');
+    lp.setAttribute('stroke-width', 1.5); lp.setAttribute('stroke-dasharray', '5 4');
+    svg.appendChild(lp);
+  }
+  if (bestPts.length) {
+    const bp = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+    bp.setAttribute('d', pathFor(bestPts, 'best', true));
+    bp.setAttribute('fill', 'none'); bp.setAttribute('stroke', '#2563eb');
+    bp.setAttribute('stroke-width', 2);
+    svg.appendChild(bp);
+    const last = bestPts[bestPts.length - 1];
+    const dot = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
+    dot.setAttribute('cx', x(last.t)); dot.setAttribute('cy', y(last.best)); dot.setAttribute('r', 4);
+    dot.setAttribute('fill', '#2563eb');
+    svg.appendChild(dot);
+  }
+}
+
 function lineChart(container, { labels, values, height = 240, color = '#2563eb', valueFmt = v => fmt(v) }) {
   const W = 560, H = height, padL = 46, padB = 40, padT = 16;
   const min = Math.min(...values), max = Math.max(...values);

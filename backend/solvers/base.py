@@ -7,6 +7,7 @@ from abc import ABC, abstractmethod
 from typing import Any, Dict, List, Type
 
 from .. import models
+from .progress import NULL_CONTEXT, RunContext
 
 
 class Solver(ABC):
@@ -16,8 +17,14 @@ class Solver(ABC):
 
     @abstractmethod
     def solve(self, problem: models.Problem,
-              params: Dict[str, Any]) -> models.Solution:
-        """Solve ``problem`` with ``params`` and return a Solution."""
+              params: Dict[str, Any],
+              ctx: RunContext = NULL_CONTEXT) -> models.Solution:
+        """Solve ``problem`` with ``params`` and return a Solution.
+
+        ``ctx`` is an optional :class:`RunContext` used by long-running
+        solvers to publish progress and honour stop requests; direct callers
+        (CLI, tests) may omit it.
+        """
 
     # ------------------------------------------------------------------ #
     def make_solution(self, problem: models.Problem, starts: Dict[str, int],

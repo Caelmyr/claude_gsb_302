@@ -7,6 +7,7 @@ from typing import Any, Dict
 
 from .. import models
 from .base import Solver, register
+from .progress import NULL_CONTEXT, RunContext
 from . import schedule_builder
 
 
@@ -15,8 +16,10 @@ class GreedySolver(Solver):
     name = "greedy"
 
     def solve(self, problem: models.Problem,
-              params: Dict[str, Any]) -> models.Solution:
+              params: Dict[str, Any],
+              ctx: RunContext = NULL_CONTEXT) -> models.Solution:
         t0 = time.time()
+        ctx.phase = "priority-rule serial SGS"
         order = schedule_builder.greedy_order(problem)
         starts = schedule_builder.decode(problem, order)
         feasible = len(starts) == len(problem.tasks)

@@ -58,7 +58,7 @@ SOFT_CONSTRAINT_TYPES = (
 
 SOLVER_NAMES = ("lp", "ip", "genetic", "simulated_annealing", "greedy")
 
-SOLUTION_STATUS = ("optimal", "feasible", "infeasible", "timeout", "error")
+SOLUTION_STATUS = ("optimal", "feasible", "infeasible", "timeout", "stopped", "error")
 
 
 def now_iso() -> str:

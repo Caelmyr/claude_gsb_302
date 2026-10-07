@@ -22,14 +22,14 @@ used because performance matters more for the time-indexed scheduling LP.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import List, Optional, Tuple
+from typing import Callable, List, Optional, Tuple
 
 EPS = 1e-9
 
 
 @dataclass
 class SimplexResult:
-    status: str  # 'optimal' | 'infeasible' | 'unbounded' | 'iteration_limit'
+    status: str  # 'optimal' | 'infeasible' | 'unbounded' | 'iteration_limit' | 'cancelled'
     x: List[float] = field(default_factory=list)
     objective: Optional[float] = None
     reduced_costs: List[float] = field(default_factory=list)
@@ -58,14 +58,20 @@ def _pivot(T: List[List[float]], basis: List[int], r: int, c: int,
 
 
 def _simplex_iterate(T: List[List[float]], basis: List[int], ncols: int,
-                     nrows: int, max_iter: int) -> Tuple[str, int]:
+                     nrows: int, max_iter: int,
+                     cancel: Optional[Callable[[], bool]] = None
+                     ) -> Tuple[str, int]:
     """Run simplex on an already-canonical tableau (objective in row ``nrows``).
 
     Returns (status, iterations).  The tableau and basis are mutated in place.
+    ``cancel()`` is consulted between pivots and aborts with status
+    ``'cancelled'`` so a user stop is honoured promptly even on a large LP.
     """
     it = 0
     while it < max_iter:
         it += 1
+        if cancel is not None and cancel():
+            return "cancelled", it
         obj_row = T[nrows]
         # Bland's rule for entering: smallest index with negative reduced cost.
         enter = -1
@@ -97,8 +103,13 @@ def linprog(c: List[float],
             b_ub: Optional[List[float]] = None,
             A_eq: Optional[List[List[float]]] = None,
             b_eq: Optional[List[float]] = None,
-            max_iter: int = 200000) -> SimplexResult:
-    """Solve the LP.  Returns a :class:`SimplexResult`."""
+            max_iter: int = 200000,
+            cancel: Optional[Callable[[], bool]] = None) -> SimplexResult:
+    """Solve the LP.  Returns a :class:`SimplexResult`.
+
+    ``cancel()`` (optional) is polled between simplex pivots; when it returns
+    True the solver returns early with ``status='cancelled'``.
+    """
     c = [float(v) for v in c]
     n = len(c)
     A_ub = _to_float_matrix(A_ub or [])
@@ -182,8 +193,8 @@ def linprog(c: List[float],
                     obj[j] -= row_i[j]
                 obj[ncols] -= row_i[ncols]   # RHS holds -w
 
-        status, it1 = _simplex_iterate(T, basis, ncols, nrows, max_iter)
-        if status in ("unbounded", "iteration_limit"):
+        status, it1 = _simplex_iterate(T, basis, ncols, nrows, max_iter, cancel)
+        if status in ("unbounded", "iteration_limit", "cancelled"):
             return SimplexResult(status=status, iterations=it1,
                                  message=f"phase 1: {status}")
 
@@ -235,10 +246,10 @@ def linprog(c: List[float],
         obj[j] += c[j]
     obj[ncols] = -obj[ncols]   # RHS holds -z
 
-    status, it2 = _simplex_iterate(T, basis, ncols, nrows, max_iter)
-    if status == "iteration_limit":
+    status, it2 = _simplex_iterate(T, basis, ncols, nrows, max_iter, cancel)
+    if status in ("iteration_limit", "cancelled"):
         return SimplexResult(status=status, iterations=it1 + it2,
-                             message="phase 2: iteration limit reached")
+                             message=f"phase 2: {status}")
 
     # ---- Extract solution ------------------------------------------------- #
     x = [0.0] * n

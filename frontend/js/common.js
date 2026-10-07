@@ -59,6 +59,7 @@ const STATUS_LABELS = {
   feasible: '可行',
   infeasible: '不可行',
   timeout: '超时',
+  stopped: '已停止',
   error: '错误',
 };
 
@@ -185,7 +186,7 @@ function escapeHtml(s) {
 
 function statusBadge(status) {
   const cls = { optimal: 'ok', feasible: 'info', infeasible: 'bad',
-    timeout: 'warn', error: 'bad' }[status] || 'muted';
+    timeout: 'warn', stopped: 'warn', error: 'bad' }[status] || 'muted';
   return `<span class="badge ${cls}">${escapeHtml(statusLabel(status))}</span>`;
 }
 
