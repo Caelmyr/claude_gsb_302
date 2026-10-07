@@ -13,7 +13,7 @@ from typing import Any, Dict, List, Optional
 
 from flask import Flask, jsonify, request, send_from_directory
 
-from . import models, report, sensitivity, storage
+from . import jobs as job_mod, models, report, sensitivity, storage
 from .solvers import base as solver_base
 
 FRONTEND_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
@@ -136,6 +136,42 @@ def create_app() -> Flask:
             return jsonify({"error": str(exc)}), 400
         storage.save_solution(problem_id, solution)
         return jsonify(solution.to_dict()), 201
+
+    # ------------------------------------------------------------------ #
+    # Asynchronous solve jobs (live progress + cooperative stop).
+    # ------------------------------------------------------------------ #
+    @app.route("/api/problems/<problem_id>/solve-jobs", methods=["POST"])
+    def create_solve_job(problem_id: str):
+        problem = storage.load_problem(problem_id)
+        if problem is None:
+            return jsonify({"error": "not found"}), 404
+        data = request.get_json(force=True) or {}
+        solver_name = data.get("solver", "greedy")
+        if solver_name not in solver_base.available_solvers():
+            return jsonify({"error": f"unknown solver: {solver_name}"}), 400
+        params = dict(solver_base.default_params(solver_name))
+        params.update(data.get("params") or {})
+        try:
+            job = job_mod.manager.start(problem, solver_name, params)
+        except (ValueError, RuntimeError) as exc:
+            return jsonify({"error": str(exc)}), 409 if "active" in str(exc) else 400
+        return jsonify(job.to_dict()), 202
+
+    @app.route("/api/problems/<problem_id>/solve-jobs/<job_id>", methods=["GET"])
+    def get_solve_job(problem_id: str, job_id: str):
+        job = job_mod.manager.get(job_id)
+        if job is None or job.problem_id != problem_id:
+            return jsonify({"error": "not found"}), 404
+        return jsonify(job.to_dict())
+
+    @app.route("/api/problems/<problem_id>/solve-jobs/<job_id>/stop",
+               methods=["POST"])
+    def stop_solve_job(problem_id: str, job_id: str):
+        job = job_mod.manager.get(job_id)
+        if job is None or job.problem_id != problem_id:
+            return jsonify({"error": "not found"}), 404
+        job_mod.manager.stop(job_id)
+        return jsonify(job.to_dict())
 
     @app.route("/api/problems/<problem_id>/solutions", methods=["GET"])
     def solutions(problem_id: str):

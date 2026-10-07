@@ -16,7 +16,7 @@ import time
 from typing import Any, Dict, List, Optional, Tuple
 
 from .. import models
-from .base import INFEASIBILITY_PENALTY, Solver, evaluate_priorities, register
+from .base import Progress, Solver, evaluate_priorities, register
 from . import schedule_builder
 
 
@@ -25,7 +25,10 @@ class GeneticSolver(Solver):
     name = "genetic"
 
     def solve(self, problem: models.Problem,
-              params: Dict[str, Any]) -> models.Solution:
+              params: Dict[str, Any],
+              progress: Progress | None = None) -> models.Solution:
+        if progress is None:
+            progress = Progress()
         pop_size = int(params.get("population_size", 60))
         generations = int(params.get("generations", 150))
         mutation_rate = float(params.get("mutation_rate", 0.15))
@@ -36,6 +39,9 @@ class GeneticSolver(Solver):
 
         rng = random.Random(seed)
         t0 = time.time()
+        progress.time_limit = time_limit
+        progress.total = generations
+        progress.stage = "initial population"
         task_ids = [t.id for t in problem.tasks]
 
         def random_individual() -> Dict[str, float]:
@@ -46,16 +52,49 @@ class GeneticSolver(Solver):
 
         # initialise population
         population: List[Tuple[Dict[str, float], float, Dict[str, int]]] = []
-        for _ in range(pop_size):
+        init_best: Optional[Tuple[Dict[str, float], float, Dict[str, int]]] = None
+        for i in range(pop_size):
+            if progress.stop_requested():
+                break
             ind = random_individual()
             starts, obj = fitness(ind)
-            population.append((ind, obj, starts))
+            member = (ind, obj, starts)
+            population.append(member)
+            if init_best is None or obj < init_best[1]:
+                init_best = member
+                progress.update(best=obj, stage="initial population",
+                                message=f"{i + 1}/{pop_size} individuals, running best",
+                                force=(len(population) == 1))
 
-        best = min(population, key=lambda p: p[1])
+        best = min(population, key=lambda p: p[1]) if population else None
+        if best is None:
+            # Stopped before the first individual finished decoding: hand back
+            # the greedy schedule so the stop still leaves a usable result.
+            greedy_starts = schedule_builder.decode(
+                problem, schedule_builder.greedy_order(problem))
+            greedy_obj = evaluate_priorities(problem,
+                                            schedule_builder.greedy_order(problem))[1]
+            best = ({tid: 0.0 for tid in task_ids}, greedy_obj, greedy_starts)
+            sol = self.make_solution(
+                problem, greedy_starts, status="stopped",
+                solve_time=time.time() - t0,
+                message="stopped by user before initial population; greedy fallback saved",
+                params=params)
+            progress.update(stage="stopped", best=sol.objective_value,
+                            message=sol.message)
+            return sol
+        progress.update(best=best[1], stage="evolving", current=0,
+                        message="generation 0 (seed population)",
+                        extra={"population_size": pop_size}, force=True)
         generations_run = 0
         timed_out = False
+        stopped = False
+        last_report = 0.0
 
         for gen in range(generations):
+            if progress.stop_requested():
+                stopped = True
+                break
             if time.time() - t0 > time_limit:
                 timed_out = True
                 break
@@ -78,16 +117,25 @@ class GeneticSolver(Solver):
 
             population = next_pop
             cand = min(population, key=lambda p: p[1])
-            if cand[1] < best[1]:
+            improved = cand[1] < best[1]
+            if improved:
                 best = cand
+
+            now = time.time()
+            if improved or now - last_report >= 0.25:
+                last_report = now
+                progress.update(current=generations_run, best=best[1],
+                                stage="evolving",
+                                message=f"generation {generations_run}/{generations}")
 
         _, best_obj, best_starts = best
         feasible = len(best_starts) == len(problem.tasks)
         sol = self.make_solution(
             problem, best_starts,
-            status="feasible" if feasible else "infeasible",
+            status="stopped" if stopped else ("feasible" if feasible else "infeasible"),
             solve_time=time.time() - t0,
-            message=("time limit reached" if timed_out else
+            message=("stopped by user; best incumbent kept" if stopped else
+                     "time limit reached" if timed_out else
                      f"{generations_run} generations, pop {pop_size}"),
             params=params,
             extra_metrics={
@@ -96,6 +144,8 @@ class GeneticSolver(Solver):
                 "fitness": round(best_obj, 4),
                 "feasible": feasible,
             })
+        progress.update(current=generations_run, best=best_obj,
+                        stage=sol.status, message=sol.message)
         return sol
 
     # -- operators -------------------------------------------------------- #

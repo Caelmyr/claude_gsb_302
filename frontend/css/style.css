@@ -164,6 +164,32 @@ textarea { min-height: 120px; font-family: var(--mono); font-size: 12px; resize:
 
 .btn-row { display: flex; gap: 10px; margin-top: 14px; flex-wrap: wrap; }
 
+/* ---- live solve progress --------------------------------------------- */
+.progress-track {
+  height: 10px; border-radius: 6px; background: #eef0f3; overflow: hidden;
+  margin: 10px 0 6px;
+}
+.progress-fill {
+  height: 100%; width: 0%;
+  background: linear-gradient(90deg, var(--accent), var(--accent-2));
+  border-radius: 6px; transition: width .25s ease;
+}
+.progress-track.indeterminate .progress-fill {
+  width: 40% !important;
+  animation: indeterminate 1.4s ease-in-out infinite;
+}
+@keyframes indeterminate {
+  0% { margin-left: -40%; }
+  100% { margin-left: 100%; }
+}
+.progress-meta {
+  display: flex; justify-content: space-between; gap: 12px;
+  font-size: 12px; color: var(--muted); font-variant-numeric: tabular-nums;
+}
+.pulse { display: inline-block; width: 8px; height: 8px; border-radius: 50%;
+  background: var(--ok); margin-right: 6px; animation: pulse 1.2s ease-in-out infinite; }
+@keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: .3; } }
+
 /* ---- tables ---------------------------------------------------------- */
 table { width: 100%; border-collapse: collapse; font-size: 13px; }
 th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--line); }

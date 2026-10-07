@@ -22,7 +22,7 @@ used because performance matters more for the time-indexed scheduling LP.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import List, Optional, Tuple
+from typing import Callable, List, Optional, Tuple
 
 EPS = 1e-9
 
@@ -58,14 +58,20 @@ def _pivot(T: List[List[float]], basis: List[int], r: int, c: int,
 
 
 def _simplex_iterate(T: List[List[float]], basis: List[int], ncols: int,
-                     nrows: int, max_iter: int) -> Tuple[str, int]:
+                     nrows: int, max_iter: int,
+                     should_stop: Optional[Callable[[], bool]] = None) -> Tuple[str, int]:
     """Run simplex on an already-canonical tableau (objective in row ``nrows``).
 
     Returns (status, iterations).  The tableau and basis are mutated in place.
+    ``should_stop`` is polled periodically; when true the run exits early with
+    status ``"iteration_limit"`` so callers can distinguish an unfinished solve
+    from a proven optimum without raising.
     """
     it = 0
     while it < max_iter:
         it += 1
+        if should_stop is not None and it % 512 == 0 and should_stop():
+            return "iteration_limit", it
         obj_row = T[nrows]
         # Bland's rule for entering: smallest index with negative reduced cost.
         enter = -1
@@ -97,7 +103,8 @@ def linprog(c: List[float],
             b_ub: Optional[List[float]] = None,
             A_eq: Optional[List[List[float]]] = None,
             b_eq: Optional[List[float]] = None,
-            max_iter: int = 200000) -> SimplexResult:
+            max_iter: int = 200000,
+            should_stop: Optional[Callable[[], bool]] = None) -> SimplexResult:
     """Solve the LP.  Returns a :class:`SimplexResult`."""
     c = [float(v) for v in c]
     n = len(c)
@@ -182,7 +189,8 @@ def linprog(c: List[float],
                     obj[j] -= row_i[j]
                 obj[ncols] -= row_i[ncols]   # RHS holds -w
 
-        status, it1 = _simplex_iterate(T, basis, ncols, nrows, max_iter)
+        status, it1 = _simplex_iterate(T, basis, ncols, nrows, max_iter,
+                                       should_stop)
         if status in ("unbounded", "iteration_limit"):
             return SimplexResult(status=status, iterations=it1,
                                  message=f"phase 1: {status}")
@@ -235,7 +243,8 @@ def linprog(c: List[float],
         obj[j] += c[j]
     obj[ncols] = -obj[ncols]   # RHS holds -z
 
-    status, it2 = _simplex_iterate(T, basis, ncols, nrows, max_iter)
+    status, it2 = _simplex_iterate(T, basis, ncols, nrows, max_iter,
+                                   should_stop)
     if status == "iteration_limit":
         return SimplexResult(status=status, iterations=it1 + it2,
                              message="phase 2: iteration limit reached")

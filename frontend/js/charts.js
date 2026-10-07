@@ -132,3 +132,100 @@ function lineChart(container, { labels, values, height = 240, color = '#2563eb',
   });
   return svg;
 }
+
+/* Best-incumbent convergence chart: points are (time seconds, best objective)
+   improvement events; drawn as a monotone non-increasing step curve (classic
+   solver log look).  An optional lower-bound series is overlaid for exact
+   solvers.  Value labels are only shown at first/last to avoid clutter when
+   there are hundreds of improvements. */
+function convergenceChart(container, { history, lowerBounds = [], height = 220,
+  valueFmt = v => fmt(v) }) {
+  const W = 560, H = height, padL = 52, padR = 14, padB = 34, padT = 18;
+  container.innerHTML = '';
+  if (!history || history.length === 0) {
+    container.innerHTML = '<p class="small muted" style="padding:24px;text-align:center">等待第一个可行解…</p>';
+    return null;
+  }
+  // Extend the curve to "now" so the final incumbent holds to the right edge.
+  const now = Math.max(history[history.length - 1].t,
+    lowerBounds.length ? lowerBounds[lowerBounds.length - 1].t : 0);
+  const pts = history.map(p => [p.t, p.best]);
+  pts.push([now, history[history.length - 1].best]);
+  const lbPts = lowerBounds.map(p => [p.t, p.lb]);
+
+  const maxT = Math.max(1, now);
+  let lo = Math.min(...pts.map(p => p[1]));
+  let hi = Math.max(...pts.map(p => p[1]));
+  if (lbPts.length) {
+    lo = Math.min(lo, ...lbPts.map(p => p[1]));
+    hi = Math.max(hi, ...lbPts.map(p => p[1]));
+  }
+  if (!isFinite(lo) || !isFinite(hi) || hi - lo < 1e-9) { lo = (lo || 0) - 1; hi = (hi || 0) + 1; }
+  const span = hi - lo;
+  lo -= span * 0.05; hi += span * 0.05;
+
+  const svg = _svg(container, W, H);
+  const innerW = W - padL - padR, innerH = H - padT - padB;
+  const x = t => padL + innerW * Math.min(1, t / maxT);
+  const y = v => padT + innerH - innerH * (v - lo) / (hi - lo);
+
+  for (let i = 0; i <= 4; i++) {
+    const val = lo + (hi - lo) * i / 4;
+    const yy = y(val);
+    const line = document.createElementNS('http://www.w3.org/2000/svg', 'line');
+    line.setAttribute('x1', padL); line.setAttribute('y1', yy);
+    line.setAttribute('x2', W - padR); line.setAttribute('y2', yy);
+    line.setAttribute('stroke', '#eef0f3');
+    svg.appendChild(line);
+    _axis(svg, padL - 6, yy + 3, valueFmt(val), { anchor: 'end' });
+  }
+  for (let i = 0; i <= 4; i++) {
+    _axis(svg, padL + innerW * i / 4, padT + innerH + 16,
+      (maxT * i / 4).toFixed(1) + 's', { size: 10 });
+  }
+
+  // lower bound (dashed)
+  if (lbPts.length > 1) {
+    let dlb = '';
+    lbPts.forEach((p, i) => { dlb += (i ? 'L' : 'M') + x(p[0]) + ' ' + y(p[1]) + ' '; });
+    const path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+    path.setAttribute('d', dlb); path.setAttribute('fill', 'none');
+    path.setAttribute('stroke', '#f28e2b'); path.setAttribute('stroke-width', 1.5);
+    path.setAttribute('stroke-dasharray', '5 4');
+    svg.appendChild(path);
+  }
+
+  // incumbent step curve
+  let d = '';
+  pts.forEach((p, i) => {
+    if (i === 0) { d += `M${x(p[0])} ${y(p[1])} `; }
+    else {
+      const prev = pts[i - 1];
+      d += `L${x(p[0])} ${y(prev[1])} L${x(p[0])} ${y(p[1])} `;
+    }
+  });
+  const path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+  path.setAttribute('d', d); path.setAttribute('fill', 'none');
+  path.setAttribute('stroke', '#2563eb'); path.setAttribute('stroke-width', 2);
+  svg.appendChild(path);
+
+  // markers + labels at first improvement and current best
+  const first = history[0], last = history[history.length - 1];
+  [[first.t, first.best, 'start'], [last.t, last.best, 'end']].forEach(([t, v, k]) => {
+    const c = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
+    c.setAttribute('cx', x(t)); c.setAttribute('cy', y(v)); c.setAttribute('r', 3.5);
+    c.setAttribute('fill', '#2563eb');
+    svg.appendChild(c);
+    _axis(svg, x(t) + (k === 'end' ? -6 : 6), y(v) - 7, valueFmt(v),
+      { anchor: k === 'end' ? 'end' : 'start', size: 10 });
+  });
+
+  // legend
+  _axis(svg, padL + 8, padT + 4, '— 目前最好目标值', { anchor: 'start', size: 10 });
+  const leg = svg.lastChild; leg.setAttribute('fill', '#2563eb');
+  if (lbPts.length) {
+    _axis(svg, padL + 150, padT + 4, '- - 下界', { anchor: 'start', size: 10 });
+    svg.lastChild.setAttribute('fill', '#f28e2b');
+  }
+  return svg;
+}

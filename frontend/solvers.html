@@ -32,6 +32,28 @@
       <div class="form-grid" id="param-fields"></div>
     </div>
 
+    <div class="card" id="progress-card" style="display:none">
+      <div class="flex">
+        <h2 style="margin:0"><span id="pulse"></span><span id="progress-title">求解进度</span></h2>
+        <div class="spacer"></div>
+        <button class="btn danger" id="stop-btn" onclick="stopJob()">■ 停止</button>
+      </div>
+      <div class="progress-track" id="progress-track"><div class="progress-fill" id="progress-fill"></div></div>
+      <div class="progress-meta">
+        <span id="progress-explored">—</span>
+        <span id="progress-eta">—</span>
+      </div>
+      <div class="grid cols-4" style="margin-top:12px">
+        <div class="stat"><div class="label">当前最好目标值</div><div class="value" id="p-best">—</div></div>
+        <div class="stat"><div class="label">下界</div><div class="value" id="p-lb">—</div></div>
+        <div class="stat"><div class="label">已用时间</div><div class="value" id="p-elapsed">0s</div></div>
+        <div class="stat"><div class="label">阶段</div><div class="value" style="font-size:16px" id="p-stage">—</div></div>
+      </div>
+      <p class="small muted" id="progress-msg" style="margin:8px 0 0"></p>
+      <h3 class="small muted" style="margin:14px 0 6px">最好目标值随时间变化</h3>
+      <div id="convergence"></div>
+    </div>
+
     <div class="card" id="result-card" style="display:none">
       <h2>求解结果</h2>
       <div id="result-body"></div>
@@ -45,12 +67,23 @@
   </main>
 </div>
 <script src="js/common.js"></script>
+<script src="js/charts.js"></script>
 <script>
 let problem = null;
 let defaults = {};
 let selected = 'genetic';
+let activeJob = null;
+let pollTimer = null;
+let lastChartPts = 0;
 
 initSidebar('solvers.html');
+
+// The solve keeps running server-side if the tab is closed; warn only so the
+// user knows this page's live view will stop updating (the incumbent is still
+// saved automatically on completion/stop).
+window.addEventListener('beforeunload', (e) => {
+  if (activeJob) { e.preventDefault(); e.returnValue = ''; }
+});
 
 async function load() {
   const id = currentProblemId();
@@ -117,18 +150,160 @@ function collectParams() {
 }
 
 async function run() {
+  if (activeJob) return;
   const btn = document.getElementById('run-btn');
   btn.disabled = true; btn.textContent = '求解中…';
+  document.getElementById('result-card').style.display = 'none';
   try {
-    const sol = await api(`/problems/${problem.id}/solve`, {
+    const job = await api(`/problems/${problem.id}/solve-jobs`, {
       method: 'POST', body: JSON.stringify({ solver: selected, params: collectParams() }),
     });
-    showResult(sol);
-    toast(`求解完成：目标值 ${fmt(sol.objective_value)}`);
+    activeJob = job;
+    showProgressCard();
+    renderProgress(job);
+    pollTimer = setInterval(pollJob, 500);
   } catch (e) {
     toast(e.message, 'error');
-  } finally {
     btn.disabled = false; btn.textContent = '▶ 求解';
+  }
+}
+
+async function pollJob() {
+  if (!activeJob) return;
+  let job;
+  try {
+    job = await api(`/problems/${problem.id}/solve-jobs/${activeJob.id}`);
+  } catch (e) {
+    // The server only keeps finished jobs in memory for a bounded TTL; after
+    // that the live snapshot is gone (the saved solution remains on disk and
+    // in the results/history pages).
+    if (/not found/i.test(e.message)) {
+      clearInterval(pollTimer); pollTimer = null;
+      activeJob = null;
+      const runBtn = document.getElementById('run-btn');
+      runBtn.disabled = false; runBtn.textContent = '▶ 求解';
+      document.getElementById('stop-btn').disabled = true;
+      document.getElementById('progress-msg').textContent =
+        '该任务的实时状态已过期（服务重启或超时），已保存的方案仍可在“结果与目标值”页面查看。';
+      return;
+    }
+    // transient poll failure: leave the timer running, just note it
+    document.getElementById('progress-msg').textContent = '刷新进度失败，重试中…';
+    return;
+  }
+  activeJob = job;
+  renderProgress(job);
+  if (['completed', 'stopped', 'failed'].includes(job.status)) {
+    clearInterval(pollTimer); pollTimer = null;
+    finishJob(job);
+  }
+}
+
+async function stopJob() {
+  if (!activeJob) return;
+  const btn = document.getElementById('stop-btn');
+  btn.disabled = true; btn.textContent = '正在停止…';
+  try {
+    await api(`/problems/${problem.id}/solve-jobs/${activeJob.id}/stop`, { method: 'POST' });
+  } catch (e) {
+    toast(e.message, 'error');
+    btn.disabled = false; btn.textContent = '■ 停止';
+  }
+}
+
+function finishJob(job) {
+  activeJob = null;
+  const runBtn = document.getElementById('run-btn');
+  runBtn.disabled = false; runBtn.textContent = '▶ 求解';
+  const stopBtn = document.getElementById('stop-btn');
+  stopBtn.disabled = true; stopBtn.textContent = '■ 停止';
+  document.getElementById('pulse').innerHTML = '';
+
+  if (job.status === 'failed') {
+    toast(job.error || '求解失败', 'error');
+    document.getElementById('progress-msg').textContent = '求解失败：' + (job.error || '');
+    return;
+  }
+  const sol = job.solution;
+  showResult(sol);
+  if (job.status === 'stopped') {
+    toast(`已停止，当前最好解已保存：目标值 ${fmt(sol.objective_value)}`);
+  } else {
+    toast(`求解完成：目标值 ${fmt(sol.objective_value)}`);
+  }
+}
+
+/* ---- live progress rendering ------------------------------------------ */
+function showProgressCard() {
+  document.getElementById('progress-card').style.display = 'block';
+  document.getElementById('progress-card').scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+  document.getElementById('stop-btn').disabled = false;
+  document.getElementById('pulse').innerHTML = '<span class="pulse"></span>';
+  document.getElementById('progress-title').textContent =
+    `求解中 — ${SOLVER_LABELS[selected] || selected}`;
+  lastChartPts = 0;
+}
+
+const UNIT_LABELS = {
+  ip: { unit: '节点', lb: '搜索下界' },
+  genetic: { unit: '代', lb: null },
+  simulated_annealing: { unit: '次迭代', lb: null },
+  lp: { unit: null, lb: 'LP 下界' },
+  greedy: { unit: null, lb: null },
+};
+
+function renderProgress(job) {
+  const p = job.progress;
+  const meta = UNIT_LABELS[job.solver] || { unit: null, lb: null };
+  const stopping = p.stop_requested && !['completed', 'stopped', 'failed'].includes(job.status);
+
+  // bar: fraction of total work if known, otherwise fraction of time limit
+  const track = document.getElementById('progress-track');
+  const fill = document.getElementById('progress-fill');
+  let frac = p.fraction;
+  if (frac == null && p.time_limit) frac = Math.min(1, p.elapsed / p.time_limit);
+  if (frac == null) {
+    track.classList.add('indeterminate');
+    fill.style.width = '';
+  } else {
+    track.classList.remove('indeterminate');
+    fill.style.width = (frac * 100).toFixed(1) + '%';
+  }
+
+  // explored counter
+  let explored = '—';
+  if (meta.unit && (p.current || p.total)) {
+    explored = `已探索：${fmt(p.current)}${p.total ? ' / ' + fmt(p.total) : ''} ${meta.unit}`;
+  } else if (p.stage) {
+    explored = `阶段：${p.stage}`;
+  }
+  document.getElementById('progress-explored').textContent = explored;
+
+  // ETA
+  let eta = '—';
+  if (stopping) eta = '正在停止，保存当前最好解…';
+  else if (frac != null && frac > 0.02 && p.elapsed > 0.5) {
+    const total = p.elapsed / frac;
+    eta = `预计剩余 ≈ ${Math.max(0, Math.round(total - p.elapsed))}s`;
+  } else if (p.time_limit) {
+    eta = `时间上限 ${p.time_limit}s`;
+  }
+  document.getElementById('progress-eta').textContent = eta;
+
+  document.getElementById('p-best').textContent = fmt(p.best_objective);
+  document.getElementById('p-lb').textContent =
+    meta.lb === null ? '—' : (p.lower_bound != null ? fmt(p.lower_bound) : '—');
+  document.getElementById('p-elapsed').textContent = fmt(p.elapsed, 1) + 's';
+  document.getElementById('p-stage').textContent = stopping ? '停止中' : (p.stage || '—');
+  document.getElementById('progress-msg').textContent = p.message || '';
+
+  // convergence chart: redraw only when a new improvement point arrived
+  if (p.history.length !== lastChartPts) {
+    lastChartPts = p.history.length;
+    convergenceChart(document.getElementById('convergence'), {
+      history: p.history,
+      lowerBounds: [],
+    });
   }
 }
 
